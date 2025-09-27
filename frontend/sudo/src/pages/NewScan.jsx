@@ -8,7 +8,7 @@ export default function NewScan() {
   const [scanData, setScanData] = useState(null);
   const [lastRawXml, setLastRawXml] = useState("");
 
-  const API_URL = "http://localhost:3008";
+  const API_URL = "http://localhost:3010";
 
   const handleScan = async (scanType, body) => {
     setScanInProgress(true);
