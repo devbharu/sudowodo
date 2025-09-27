@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Scan Web UI</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:#f7f8fb; color:#111; padding:24px; }
+  .container { max-width:800px; margin:0 auto; background:#fff; padding:20px; box-shadow:0 6px 18px rgba(10,10,30,0.06); border-radius:8px; }
+  label { display:block; margin-top:10px; font-weight:600; }
+  input[type="text"], select { width:100%; padding:8px 10px; font-size:14px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; }
+  button { margin-top:12px; padding:10px 14px; border-radius:8px; border:none; background:#2563eb; color:#fff; cursor:pointer; font-weight:600; }
+  button[disabled] { opacity:0.6; cursor:not-allowed; }
+  pre { background:#0b1220; color:#e6eef8; padding:12px; border-radius:6px; overflow:auto; max-height:400px; }
+  .meta { margin-top:8px; color:#666; font-size:13px; }
+  .row { display:flex; gap:12px; align-items:center; margin-top:8px; }
+  .small { font-size:13px; color:#444; }
+  .status-success { color: green; font-weight: 600; }
+  .status-error { color: red; font-weight: 600; }
+  .status-info { color: #2563eb; font-weight: 600; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>Scan Web UI</h2>
+  <p class="small">Enter a hostname or IPv4 (CIDR supported). Only scan hosts you own or have permission to scan.</p>
+
+  <label for="scanType">Scan Type</label>
+  <select id="scanType">
+    <option value="nmap">Nmap</option>
+    <option value="nikto">Nikto</option>
+    <option value="nessus">Nessus</option>
+    <option value="full">Full Scan (Nmap + Nikto + OSV)</option>
+  </select>
+
+  <label for="target">Target</label>
+  <input id="target" type="text" placeholder="example.com or 45.33.32.156" />
+
+  <div id="nmapOptions">
+    <label for="args">Nmap Args (optional)</label>
+    <input id="args" type="text" placeholder="-sT -p 22,80,443 -T4" />
+  </div>
+
+  <div id="niktoOptions" class="hidden">
+    <label for="niktoArgs">Nikto Args (optional)</label>
+    <input id="niktoArgs" type="text" placeholder="-p 80,443" />
+  </div>
+
+  <div id="nessusOptions" class="hidden">
+    <label for="scanName">Nessus Scan Name</label>
+    <input id="scanName" type="text" placeholder="My API Scan" />
+    <label for="templateUuid">Select Template</label>
+    <select id="templateUuid"><option value="">Loading...</option></select>
+    <div id="nessusStatus" class="meta status-info"></div>
+  </div>
+
+  <div class="row">
+    <button id="scanBtn">Run Scan</button>
+    <div id="status" class="meta"></div>
+  </div>
+
+  <div id="outputArea" class="hidden">
+    <h3>Result (JSON)</h3>
+    <pre id="jsonOut">{}</pre>
+    <div class="row">
+      <button id="downloadXmlBtn">Download raw XML (Nmap only)</button>
+      <button id="copyJsonBtn">Copy JSON</button>
+    </div>
+  </div>
+
+  <div id="errorArea" class="hidden">
+    <h3 class="status-error">Error</h3>
+    <pre id="errorOut"></pre>
+  </div>
+</div>
+
+<script>
+const scanTypeSelect = document.getElementById('scanType');
+const nmapOptions = document.getElementById('nmapOptions');
+const niktoOptions = document.getElementById('niktoOptions');
+const nessusOptions = document.getElementById('nessusOptions');
+const scanBtn = document.getElementById('scanBtn');
+const targetInput = document.getElementById('target');
+const argsInput = document.getElementById('args');
+const niktoArgsInput = document.getElementById('niktoArgs');
+const scanNameInput = document.getElementById('scanName');
+const templateUuidSelect = document.getElementById('templateUuid');
+const status = document.getElementById('status');
+const outputArea = document.getElementById('outputArea');
+const jsonOut = document.getElementById('jsonOut');
+const errorArea = document.getElementById('errorArea');
+const errorOut = document.getElementById('errorOut');
+const downloadXmlBtn = document.getElementById('downloadXmlBtn');
+const copyJsonBtn = document.getElementById('copyJsonBtn');
+const nessusStatus = document.getElementById('nessusStatus');
+
+let lastRawXml = '';
+
+scanTypeSelect.addEventListener('change', () => {
+  const type = scanTypeSelect.value;
+  nmapOptions.classList.toggle('hidden', type !== 'nmap' && type !== 'full');
+  niktoOptions.classList.toggle('hidden', type !== 'nikto' && type !== 'full');
+  nessusOptions.classList.toggle('hidden', type !== 'nessus');
+  nessusStatus.textContent = '';
+});
+
+async function loadNessusTemplates() {
+  try {
+    const resp = await fetch('/nessus-templates');
+    const data = await resp.json();
+    templateUuidSelect.innerHTML = data.ok && data.templates.length
+      ? data.templates.map(t => `<option value="${t.uuid}">${t.name}</option>`).join('')
+      : '<option value="">No templates found</option>';
+  } catch {
+    templateUuidSelect.innerHTML = '<option value="">Failed to load</option>';
+  }
+}
+loadNessusTemplates();
+
+scanBtn.addEventListener('click', async () => {
+  const target = targetInput.value.trim();
+  const scanType = scanTypeSelect.value;
+  outputArea.classList.add('hidden');
+  errorArea.classList.add('hidden');
+  nessusStatus.textContent = '';
+
+  if (!target) { status.textContent = 'Enter a target.'; return; }
+
+  scanBtn.disabled = true;
+  status.textContent = 'Scanning...';
+  status.className = 'meta status-info';
+  jsonOut.textContent = '';
+  errorOut.textContent = '';
+  lastRawXml = '';
+
+  try {
+    const body = { target };
+    let endpoint;
+    if (scanType === 'nmap') endpoint = '/scan';
+    else if (scanType === 'nikto') endpoint = '/nikto-scan';
+    else if (scanType === 'nessus') {
+      endpoint = '/nessus-scan';
+      body.scanName = scanNameInput.value.trim();
+      body.templateUuid = templateUuidSelect.value;
+      if (!body.templateUuid) throw new Error('Nessus template required');
+    } else if (scanType === 'full') {
+      endpoint = '/scan-full';
+      const nmapArgs = argsInput.value.trim();
+      if (nmapArgs) body.args = nmapArgs.match(/(?:[^\s"]+|"[^"]*")+/g);
+      const niktoArgs = niktoArgsInput.value.trim();
+      if (niktoArgs) body.niktoArgs = niktoArgs.match(/(?:[^\s"]+|"[^"]*")+/g);
+    }
+
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    lastRawXml = data.nmap?.rawXml || '';
+
+    status.textContent = `${scanType.charAt(0).toUpperCase() + scanType.slice(1)} scan complete.`;
+    status.className = 'meta status-success';
+    jsonOut.textContent = JSON.stringify(data, null, 2);
+    outputArea.classList.remove('hidden');
+
+    if (scanType === 'nessus') {
+      nessusStatus.textContent = `Scan Status: ${data.status}`;
+    }
+  } catch (err) {
+    errorOut.textContent = err.message || err;
+    errorArea.classList.remove('hidden');
+    status.textContent = 'Error during scan.';
+    status.className = 'meta status-error';
+  } finally {
+    scanBtn.disabled = false;
+  }
+});
+
+downloadXmlBtn.addEventListener('click', () => {
+  if (!lastRawXml) return alert('No XML available (Nmap only)');
+  const blob = new Blob([lastRawXml], { type: 'application/xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'nmap-scan.xml';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});
+
+copyJsonBtn.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(jsonOut.textContent); alert('Copied JSON'); }
+  catch(e) { alert('Copy failed: ' + e.message); }
+});
+</script>
+</body>
+</html>

@@ -10,7 +10,7 @@ import Squares from "./components/Squares";
 import Layout from "./components/layout";
 import NewScan from "./pages/newScan";
 import { ThemeProvider } from "./context/themeContest";
-
+ 
 export default function App() {
   return (
     <ThemeProvider>
@@ -34,6 +34,7 @@ export default function App() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/scan" element={<NewScan />} />
                 <Route path="/reports" element={<Reports />} />
+              
                 <Route path="/chatbot" element={<Chatbot />} /> 
               </Routes>
             </Layout>
